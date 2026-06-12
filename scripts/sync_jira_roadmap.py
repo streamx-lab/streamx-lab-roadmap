@@ -61,22 +61,27 @@ def cf(issue: dict, key: str, cfg: dict) -> Any:
 def jira_search_jql(jql: str, cfg: dict) -> list[dict]:
     base = os.environ["JIRA_BASE_URL"].rstrip("/")
     fields = jira_field_ids(cfg) + ["issuetype"]
-    url = f"{base}/rest/api/3/search"
+    url = f"{base}/rest/api/3/search/jql"
     out: list[dict] = []
-    start = 0
+    next_page_token: str | None = None
     while True:
-        r = requests.get(
+        body: dict[str, Any] = {"jql": jql, "maxResults": 50, "fields": fields}
+        if next_page_token:
+            body["nextPageToken"] = next_page_token
+        r = requests.post(
             url,
-            headers=jira_auth(),
-            params={"jql": jql, "startAt": start, "maxResults": 50, "fields": ",".join(fields)},
+            headers={**jira_auth(), "Content-Type": "application/json"},
+            json=body,
             timeout=60,
         )
         r.raise_for_status()
         data = r.json()
         batch = data.get("issues", [])
         out.extend(batch)
-        start += len(batch)
-        if not batch or start >= data.get("total", 0):
+        if data.get("isLast", True) or not batch:
+            break
+        next_page_token = data.get("nextPageToken")
+        if not next_page_token:
             break
     return out
 
