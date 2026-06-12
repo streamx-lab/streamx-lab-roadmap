@@ -18,7 +18,6 @@ on:
 permissions:
   contents: read
   issues: write
-  organization-projects: write
 
 jobs:
   sync:
