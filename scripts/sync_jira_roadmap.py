@@ -65,7 +65,8 @@ def jira_search_jql(jql: str, cfg: dict) -> list[dict]:
     print(f"Jira JQL: {jql}")
     out: list[dict] = []
     next_page_token: str | None = None
-    while True:
+    fetch_more = True
+    while fetch_more:
         body: dict[str, Any] = {"jql": jql, "maxResults": 50, "fields": fields}
         if next_page_token:
             body["nextPageToken"] = next_page_token
@@ -80,11 +81,8 @@ def jira_search_jql(jql: str, cfg: dict) -> list[dict]:
         print(f"Jira JQL results: {json.dumps(data, indent=2)}")
         batch = data.get("issues", [])
         out.extend(batch)
-        if data.get("isLast", True) or not batch:
-            break
-        next_page_token = data.get("nextPageToken")
-        if not next_page_token:
-            break
+        fetch_more = bool(batch) and not data.get("isLast", True) and bool(data.get("nextPageToken"))
+        next_page_token = data.get("nextPageToken") if fetch_more else None
     return out
 
 
@@ -226,6 +224,60 @@ def add_to_project(project_id: str, issue_node_id: str) -> str:
     return data["addProjectV2ItemById"]["item"]["id"]
 
 
+def find_project_item(project_id: str, issue_node_id: str) -> str | None:
+    cursor: str | None = None
+    has_next_page = True
+    while has_next_page:
+        data = graphql(
+            """
+            query($p:ID!,$after:String){
+              node(id:$p){
+                ... on ProjectV2 {
+                  items(first:100, after:$after){
+                    pageInfo { hasNextPage endCursor }
+                    nodes { id content { ... on Issue { id } } }
+                  }
+                }
+              }
+            }
+            """,
+            {"p": project_id, "after": cursor},
+        )
+        items = data["node"]["items"]
+        for item in items["nodes"]:
+            content = item.get("content") or {}
+            if content.get("id") == issue_node_id:
+                return item["id"]
+        has_next_page = items["pageInfo"]["hasNextPage"]
+        cursor = items["pageInfo"]["endCursor"] if has_next_page else None
+    return None
+
+
+def ensure_project_item(project_id: str, issue_node_id: str) -> str:
+    try:
+        return add_to_project(project_id, issue_node_id)
+    except RuntimeError as err:
+        if "already exists" not in str(err).lower():
+            raise
+    item_id = find_project_item(project_id, issue_node_id)
+    if not item_id:
+        raise RuntimeError(f"Issue {issue_node_id} not on project and could not be added")
+    return item_id
+
+
+def issue_node_id(repo: str, issue: dict) -> str:
+    node_id = issue.get("node_id")
+    if node_id:
+        return node_id
+    r = requests.get(
+        f"{GITHUB_API}/repos/{repo}/issues/{issue['number']}",
+        headers=github_auth(),
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()["node_id"]
+
+
 def option_id(project_id: str, field_id: str, name: str) -> str:
     data = graphql(
         """
@@ -298,10 +350,10 @@ def sync_epic(
 
     gh, action = create_or_update_issue(repo, key, str(title), str(body), labels)
     print(f"{action.upper()} #{gh['number']} ← {key}")
-    if action == "create":
-        item_id = add_to_project(pid, gh["node_id"])
-        set_board_column(pid, item_id, col_field, col_value)
-        print(f"  → Project column: {col_value}")
+
+    item_id = ensure_project_item(pid, issue_node_id(repo, gh))
+    set_board_column(pid, item_id, col_field, col_value)
+    print(f"  → Project column: {col_value}")
 
     write_jira_url(key, gh["html_url"], cfg)
 
