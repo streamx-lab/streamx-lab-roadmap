@@ -1,0 +1,23 @@
+# Jira Epic → GitHub Issue + Project board sync
+#
+# jira.jql defines "published on public roadmap".
+# Webhook mode: syncs ONE epic (issue_key from Jira Automation).
+# Full reconcile: when JIRA_ISSUE_KEY is empty (manual / weekly cron).
+
+jira:
+  jql: >
+    issuetype = Epic
+    AND "Ready for Public Roadmap" = Ready
+  fields:
+    public_title: customfield_11121   # Public Roadmap Title
+    public_summary: customfield_11122 # Public Roadmap Summary (→ issue body)
+
+github:
+  default_labels:
+    - roadmap
+
+  project:
+    organization: streamx-lab
+    number: 1
+    column_field_id: PVTSSF_lADOEDmTwc4BZY08zhUXzXg
+    column_value: Acknowledged
