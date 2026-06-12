@@ -62,6 +62,7 @@ def jira_search_jql(jql: str, cfg: dict) -> list[dict]:
     base = os.environ["JIRA_BASE_URL"].rstrip("/")
     fields = jira_field_ids(cfg) + ["issuetype"]
     url = f"{base}/rest/api/3/search/jql"
+    print(f"Jira JQL: {jql}")
     out: list[dict] = []
     next_page_token: str | None = None
     while True:
@@ -76,6 +77,7 @@ def jira_search_jql(jql: str, cfg: dict) -> list[dict]:
         )
         r.raise_for_status()
         data = r.json()
+        print(f"Jira JQL results: {json.dumps(data, indent=2)}")
         batch = data.get("issues", [])
         out.extend(batch)
         if data.get("isLast", True) or not batch:
