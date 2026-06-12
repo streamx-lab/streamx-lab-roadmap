@@ -119,16 +119,37 @@ def jira_label(key: str) -> str:
     return f"jira-{key.lower()}"
 
 
+def list_github_issues(
+    repo: str, labels: list[str] | None = None, state: str = "open"
+) -> list[dict]:
+    """List repo issues by label via Issues API (avoids Search API 422/auth quirks)."""
+    url = f"{GITHUB_API}/repos/{repo}/issues"
+    params: dict[str, Any] = {"state": state, "per_page": 100}
+    if labels:
+        params["labels"] = ",".join(labels)
+    out: list[dict] = []
+    while url:
+        r = requests.get(
+            url,
+            headers=github_auth(),
+            params=params,
+            timeout=30,
+        )
+        r.raise_for_status()
+        batch = r.json()
+        out.extend(issue for issue in batch if "pull_request" not in issue)
+        url = None
+        params = None
+        for part in r.headers.get("Link", "").split(","):
+            if 'rel="next"' in part:
+                url = part[part.index("<") + 1 : part.index(">")]
+                break
+    return out
+
+
 def find_github_issue(repo: str, jira_key: str) -> dict | None:
-    r = requests.get(
-        f"{GITHUB_API}/search/issues",
-        headers=github_auth(),
-        params={"q": f'repo:{repo} label:"{jira_label(jira_key)}"', "per_page": 1},
-        timeout=30,
-    )
-    r.raise_for_status()
-    items = r.json().get("items", [])
-    return items[0] if items else None
+    issues = list_github_issues(repo, labels=[jira_label(jira_key)], state="all")
+    return issues[0] if issues else None
 
 
 def close_github_issue(repo: str, jira_key: str) -> bool:
@@ -335,14 +356,7 @@ def sync_all(cfg: dict, repo: str, pid: str, col_field: str, col_value: str, lab
         sync_epic(epic, cfg, repo, pid, col_field, col_value, labels)
 
     # Close GitHub issues for epics that were published before but no longer match JQL
-    r = requests.get(
-        f"{GITHUB_API}/search/issues",
-        headers=github_auth(),
-        params={"q": f'repo:{repo} label:roadmap state:open', "per_page": 100},
-        timeout=30,
-    )
-    r.raise_for_status()
-    for item in r.json().get("items", []):
+    for item in list_github_issues(repo, labels=labels, state="open"):
         jira_keys = [lb["name"][5:] for lb in item.get("labels", []) if lb["name"].startswith("jira-")]
         if not jira_keys:
             continue
