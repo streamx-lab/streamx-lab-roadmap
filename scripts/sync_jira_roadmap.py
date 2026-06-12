@@ -3,11 +3,11 @@
 Sync Jira Epic ↔ GitHub Issue + Project board.
 
 Modes (set JIRA_ISSUE_KEY env var):
-  - Single Epic: sync or unpublish only that key (Jira webhook / repository_dispatch).
+  - Single Epic: sync only that key (Jira webhook / repository_dispatch).
   - Empty key:   full JQL reconcile (manual workflow_dispatch or optional cron).
 
 Publish: Epic must match jira.jql (Ready checked + issuetype Epic, etc.).
-Unpublish: Epic no longer matches JQL → close GitHub issue if one exists.
+Issues are never closed by this script — only created or updated.
 """
 from __future__ import annotations
 
@@ -154,34 +154,19 @@ def find_github_issue(repo: str, jira_key: str) -> dict | None:
     return issues[0] if issues else None
 
 
-def close_github_issue(repo: str, jira_key: str) -> bool:
-    existing = find_github_issue(repo, jira_key)
-    if not existing or existing.get("state") == "closed":
-        return False
-    r = requests.patch(
-        f"{GITHUB_API}/repos/{repo}/issues/{existing['number']}",
-        headers=github_auth(),
-        json={"state": "closed"},
-        timeout=30,
-    )
-    r.raise_for_status()
-    return True
-
-
 def create_or_update_issue(
     repo: str, jira_key: str, title: str, body: str, labels: list[str]
 ) -> tuple[dict, str]:
     """Returns (issue json, action) where action is create | update | unchanged."""
     all_labels = labels + [jira_label(jira_key)]
     existing = find_github_issue(repo, jira_key)
-    payload = {"title": title.strip(), "body": body.strip(), "labels": all_labels, "state": "open"}
+    payload = {"title": title.strip(), "body": body.strip(), "labels": all_labels}
 
     if existing:
         existing_labels = {x["name"] for x in existing.get("labels", [])}
         if (
             existing.get("title") == payload["title"]
             and (existing.get("body") or "") == payload["body"]
-            and existing.get("state") == "open"
             and set(all_labels).issubset(existing_labels)
         ):
             return existing, "unchanged"
@@ -308,9 +293,7 @@ def sync_epic(
     title = cf(epic, "public_title", cfg)
     body = cf(epic, "public_summary", cfg)
     if not title or not body:
-        print(f"UNPUBLISH {key}: missing Public Roadmap Title or Summary")
-        if close_github_issue(repo, key):
-            print(f"  closed GitHub issue for {key}")
+        print(f"SKIP {key}: missing Public Roadmap Title or Summary")
         return
 
     gh, action = create_or_update_issue(repo, key, str(title), str(body), labels)
@@ -330,8 +313,6 @@ def sync_single_epic(key: str, cfg: dict, repo: str, pid: str, col_field: str, c
     issue = jira_fetch_issue(key, cfg)
     if not issue:
         print(f"WARN: {key} not found in Jira")
-        if close_github_issue(repo, key):
-            print(f"  closed GitHub issue for {key}")
         return
 
     if not is_epic(issue):
@@ -340,9 +321,7 @@ def sync_single_epic(key: str, cfg: dict, repo: str, pid: str, col_field: str, c
 
     published = jira_search_jql(epic_publish_jql(cfg, key), cfg)
     if not published:
-        print(f"UNPUBLISH {key}: does not match publish JQL (Ready unchecked or filters)")
-        if close_github_issue(repo, key):
-            print(f"  closed GitHub issue for {key}")
+        print(f"SKIP {key}: does not match publish JQL (Ready unchecked or filters)")
         return
 
     sync_epic(published[0], cfg, repo, pid, col_field, col_value, labels)
@@ -353,19 +332,8 @@ def sync_all(cfg: dict, repo: str, pid: str, col_field: str, col_value: str, lab
     epics = jira_search_jql(jql, cfg)
     print(f"Full reconcile mode: {len(epics)} epic(s) match JQL")
 
-    published_keys = {e["key"] for e in epics}
     for epic in epics:
         sync_epic(epic, cfg, repo, pid, col_field, col_value, labels)
-
-    # Close GitHub issues for epics that were published before but no longer match JQL
-    for item in list_github_issues(repo, labels=labels, state="open"):
-        jira_keys = [lb["name"][5:] for lb in item.get("labels", []) if lb["name"].startswith("jira-")]
-        if not jira_keys:
-            continue
-        jk = jira_keys[0].upper()
-        if jk not in published_keys:
-            print(f"UNPUBLISH {jk}: no longer in JQL set")
-            close_github_issue(repo, jk)
 
 
 def main() -> int:
